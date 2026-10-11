@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Мониторинг складов</title>
+  <style>
+    body { font-family: sans-serif; margin: 16px; max-width: 960px; }
+    h1, h2 { margin: 12px 0 8px; font-size: 18px; }
+    button { margin: 2px 4px 2px 0; padding: 6px 10px; cursor: pointer; }
+    input { margin: 2px 4px 2px 0; padding: 4px; }
+    .row { margin-bottom: 10px; }
+    #user { font-weight: bold; }
+    #out {
+      white-space: pre-wrap;
+      background: #f4f4f4;
+      border: 1px solid #ccc;
+      padding: 10px;
+      min-height: 80px;
+      font-size: 13px;
+    }
+    #map-board {
+      position: relative;
+      width: 500px;
+      height: 400px;
+      background: #b8e0b8;
+      border: 2px solid #5a8f5a;
+      overflow: hidden;
+    }
+    .warehouse-box {
+      position: absolute;
+      width: 70px;
+      height: 48px;
+      background: rgba(255, 255, 255, 0.55);
+      border: 2px solid #3a6b3a;
+      transform: translate(-50%, -50%);
+      font-size: 11px;
+      text-align: center;
+      line-height: 1.2;
+      padding-top: 6px;
+      box-sizing: border-box;
+    }
+    .sensor-dot {
+      position: absolute;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      border: 2px solid #222;
+      transform: translate(-50%, -50%);
+      z-index: 2;
+    }
+    .sensor-dot.green { background: #22aa22; }
+    .sensor-dot.gray { background: #888; }
+    .sensor-dot.red { background: #e00; animation: blink 0.7s infinite; }
+    @keyframes blink { 50% { opacity: 0.25; } }
+    .sensor-tip {
+      position: absolute;
+      left: 18px;
+      top: -2px;
+      white-space: nowrap;
+      font-size: 11px;
+      background: #fff;
+      border: 1px solid #999;
+      padding: 1px 4px;
+      pointer-events: none;
+    }
+    #map-legend { margin-top: 8px; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>Мониторинг складов</h1>
+  <div class="row">Пользователь: <span id="user">не вошёл</span></div>
+  <div class="row" style="color:#666;font-size:13px;">API: <span id="apiBase"></span></div>
+
+  <h2>Вход</h2>
+  <div class="row">
+    <button type="button" id="btnAdmin">Войти как admin</button>
+    <button type="button" id="btnDuty">Войти как duty</button>
+    <button type="button" id="btnLogout">Выйти</button>
+  </div>
+
+  <h2>Дежурный</h2>
+  <div class="row">
+    <button type="button" id="btnMap">Обновить карту</button>
+    <button type="button" id="btnNotes">Уведомления</button>
+    <button type="button" id="btnEvents">События</button>
+    <button type="button" id="btnStats">Статистика</button>
+  </div>
+  <div class="row">
+    <button type="button" id="btnFire">Подтвердить ПОЖАР</button>
+    <button type="button" id="btnFalse">Отметить ЛОЖНОЕ</button>
+  </div>
+
+  <h2>Симуляция датчиков</h2>
+  <div class="row">
+    <button type="button" id="btnNormal">Норма</button>
+    <button type="button" id="btnOne">1 тревога → ложное</button>
+    <button type="button" id="btnTwo">2 тревоги → ПОЖАР</button>
+    <button type="button" id="btnOff">1 offline</button>
+  </div>
+
+  <h2>Админ</h2>
+  <div class="row">
+    <input id="whName" placeholder="Название склада" value="Склад В" />
+    <button type="button" id="btnWh">Добавить склад</button>
+  </div>
+  <div class="row">
+    <input id="sensorZoneId" placeholder="id зоны" value="1" size="4" />
+    <input id="sensorName" placeholder="Имя датчика" value="Новый датчик" />
+    <select id="sensorType">
+      <option value="temperature">temperature</option>
+      <option value="oxygen">oxygen</option>
+      <option value="smoke">smoke</option>
+    </select>
+    <button type="button" id="btnSensor">Добавить датчик</button>
+  </div>
+
+  <h2>Карта</h2>
+  <div id="map-board"></div>
+  <div id="map-legend">координаты с бэка; зелёный — ок, серый — offline, красный — тревога</div>
+
+  <h2>Ответ API</h2>
+  <div id="out">Нажмите кнопку</div>
+
+  <script>
+    // Всегда ходим на бэкенд явно (работает и с /ui/, и если открыли html файлом)
+    const API = (location.protocol === "http:" || location.protocol === "https:")
+      ? location.origin
+      : "http://127.0.0.1:8000";
+
+    document.getElementById("apiBase").textContent = API;
+
+    let token = localStorage.getItem("token") || "";
+
+    function setUser(text) {
+      document.getElementById("user").textContent = text || "не вошёл";
+    }
+
+    function show(data) {
+      document.getElementById("out").textContent =
+        typeof data === "string" ? data : JSON.stringify(data, null, 2);
+    }
+
+    function formatError(data, text, status) {
+      if (data && data.detail != null) {
+        return typeof data.detail === "string"
+          ? data.detail
+          : JSON.stringify(data.detail);
+      }
+      return text || ("HTTP " + status);
+    }
+
+    async function api(path, opts = {}) {
+      const headers = Object.assign(
+        { "Content-Type": "application/json", Accept: "application/json" },
+        opts.headers || {}
+      );
+      if (token && !opts.noAuth) {
+        headers["Authorization"] = "Bearer " + token;
+      }
+      let res;
+      try {
+        res = await fetch(API + path, {
+          method: opts.method || "GET",
+          headers,
+          body: opts.body,
+        });
+      } catch (e) {
+        throw new Error(
+          "Нет связи с сервером " + API + ". Запустите: uvicorn app.main:app --port 8000"
+        );
+      }
+      const text = await res.text();
+      let data = null;
+      try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+      if (!res.ok) throw new Error(formatError(data, text, res.status));
+      return data;
+    }
+
+    async function login(u, p) {
+      try {
+        const data = await api("/api/login", {
+          method: "POST",
+          body: JSON.stringify({ username: u, password: p }),
+          noAuth: true,
+        });
+        if (!data || !data.access_token) {
+          show("Ошибка: нет access_token в ответе: " + JSON.stringify(data));
+          return;
+        }
+        token = data.access_token;
+        localStorage.setItem("token", token);
+        setUser(data.user.username + " (" + data.user.role + ")");
+        show(data);
+        await loadMap();
+      } catch (e) {
+        show("Ошибка входа: " + e.message);
+      }
+    }
+
+    function logout() {
+      token = "";
+      localStorage.removeItem("token");
+      setUser("");
+      document.getElementById("map-board").innerHTML = "";
+      show("Вышли");
+    }
+
+    function renderMap(data) {
+      const board = document.getElementById("map-board");
+      board.innerHTML = "";
+
+      const W = data.map_width || 500;
+      const H = data.map_height || 400;
+      board.style.width = W + "px";
+      board.style.height = H + "px";
+
+      (data.warehouses || []).forEach(w => {
+        const el = document.createElement("div");
+        el.className = "warehouse-box";
+        el.style.left = w.map_x + "px";
+        el.style.top = w.map_y + "px";
+        el.innerHTML = w.name + "<br><small>" + Math.round(w.map_x) + "," + Math.round(w.map_y) + "</small>";
+        board.appendChild(el);
+      });
+
+      (data.sensors || []).forEach(s => {
+        const el = document.createElement("div");
+        el.className = "sensor-dot " + (s.map_color || "green");
+        el.style.left = s.map_x + "px";
+        el.style.top = s.map_y + "px";
+        const tip = document.createElement("span");
+        tip.className = "sensor-tip";
+        tip.textContent =
+          s.name + " [" + s.status + "] " +
+          Math.round(s.map_x) + "," + Math.round(s.map_y);
+        el.appendChild(tip);
+        board.appendChild(el);
+      });
+    }
+
+    async function loadMap() {
+      try {
+        const data = await api("/api/map");
+        renderMap(data);
+        show(data);
+      } catch (e) {
+        show("Ошибка карты: " + e.message);
+      }
+    }
+
+    async function loadNotifications() {
+      try { show(await api("/api/notifications")); }
+      catch (e) { show("Ошибка: " + e.message); }
+    }
+
+    async function loadEvents() {
+      try { show(await api("/api/events")); }
+      catch (e) { show("Ошибка: " + e.message); }
+    }
+
+    async function loadStats() {
+      try { show(await api("/api/stats")); }
+      catch (e) { show("Ошибка: " + e.message); }
+    }
+
+    async function resolveOpen(resolution) {
+      try {
+        const events = await api("/api/events");
+        const open = events.find(e => e.resolution === "open");
+        if (!open) { show("Нет открытых событий"); return; }
+        show(await api("/api/events/" + open.id + "/resolve", {
+          method: "POST",
+          body: JSON.stringify({ resolution }),
+        }));
+      } catch (e) { show("Ошибка: " + e.message); }
+    }
+
+    async function ingest(ip, value, online) {
+      return api("/api/ingest/" + ip, {
+        method: "POST",
+        body: JSON.stringify({ value: value, online: online !== false }),
+        noAuth: true,
+      });
+    }
+
+    async function simNormal() {
+      try {
+        const r = [
+          await ingest("192.168.1.11", 24, true),
+          await ingest("192.168.1.12", 20.9, true),
+          await ingest("192.168.1.13", 5, true),
+        ];
+        show(r);
+        if (token) await loadMap();
+      } catch (e) { show("Ошибка: " + e.message); }
+    }
+
+    async function simOneAlarm() {
+      try {
+        await ingest("192.168.1.11", 24, true);
+        await ingest("192.168.1.12", 20.9, true);
+        await ingest("192.168.1.13", 5, true);
+        show(await ingest("192.168.1.11", 90, true));
+        if (token) await loadMap();
+      } catch (e) { show("Ошибка: " + e.message); }
+    }
+
+    async function simFire() {
+      try {
+        await ingest("192.168.1.11", 90, true);
+        await ingest("192.168.1.12", 20.9, true);
+        show(await ingest("192.168.1.13", 80, true));
+        if (token) await loadMap();
+      } catch (e) { show("Ошибка: " + e.message); }
+    }
+
+    async function simOffline() {
+      try {
+        show(await ingest("192.168.1.12", 0, false));
+        if (token) await loadMap();
+      } catch (e) { show("Ошибка: " + e.message); }
+    }
+
+    async function addWarehouse() {
+      try {
+        const name = document.getElementById("whName").value;
+        // map_x/map_y = 0 → бэкенд сам ищет свободное место
+        const data = await api("/api/warehouses", {
+          method: "POST",
+          body: JSON.stringify({ name: name, description: "через UI", map_x: 0, map_y: 0 }),
+        });
+        show(data);
+        await loadMap();
+      } catch (e) { show("Ошибка: " + e.message); }
+    }
+
+    async function addSensor() {
+      try {
+        const zone_id = Number(document.getElementById("sensorZoneId").value);
+        const name = document.getElementById("sensorName").value;
+        const sensor_type = document.getElementById("sensorType").value;
+        const ip = "192.168.9." + Math.floor(Math.random() * 200 + 10);
+        const thresholds = { temperature: 60, oxygen: 18, smoke: 50 };
+        const data = await api("/api/sensors", {
+          method: "POST",
+          body: JSON.stringify({
+            zone_id,
+            sensor_type,
+            name,
+            ip,
+            threshold: thresholds[sensor_type] || 50,
+            map_x: 0,
+            map_y: 0,
+          }),
+        });
+        show(data);
+        await loadMap();
+      } catch (e) { show("Ошибка: " + e.message); }
+    }
+
+    document.getElementById("btnAdmin").onclick = () => login("admin", "admin");
+    document.getElementById("btnDuty").onclick = () => login("duty", "duty");
+    document.getElementById("btnLogout").onclick = logout;
+    document.getElementById("btnMap").onclick = loadMap;
+    document.getElementById("btnNotes").onclick = loadNotifications;
+    document.getElementById("btnEvents").onclick = loadEvents;
+    document.getElementById("btnStats").onclick = loadStats;
+    document.getElementById("btnFire").onclick = () => resolveOpen("confirmed_fire");
+    document.getElementById("btnFalse").onclick = () => resolveOpen("confirmed_false");
+    document.getElementById("btnNormal").onclick = simNormal;
+    document.getElementById("btnOne").onclick = simOneAlarm;
+    document.getElementById("btnTwo").onclick = simFire;
+    document.getElementById("btnOff").onclick = simOffline;
+    document.getElementById("btnWh").onclick = addWarehouse;
+    document.getElementById("btnSensor").onclick = addSensor;
+
+    if (token) {
+      setUser("токен сохранён — нажмите Обновить карту или войдите снова");
+    }
+  </script>
+</body>
+</html>
