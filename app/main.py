@@ -7,12 +7,13 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from .auth import create_access_token, get_current_user
-from .db import Base, engine, get_db
+from .db import get_db, prepare_db
 from .logic import (
     CONFIRM_SECONDS,
     apply_reading,
     evaluate_all_zones,
     map_color,
+    reset_sensors,
     watch_remaining,
 )
 from .models import Event, Notification, Sensor, User, Warehouse, Zone
@@ -69,7 +70,7 @@ TAGS_METADATA = [
     },
     {
         "name": "5. Уведомления",
-        "description": "Уведомления дежурному (`duty`) и пожарной (`fire_dept`).",
+        "description": "Уведомления дежурному (`duty`), пожарной (`fire_dept`) и в Telegram при пожаре.",
     },
     {
         "name": "6. События",
@@ -244,7 +245,7 @@ def sync_map_layout(db: Session) -> None:
 
 @app.on_event("startup")
 def on_startup():
-    Base.metadata.create_all(bind=engine)
+    prepare_db()
     db = next(get_db())
     try:
         seed(db)
@@ -434,6 +435,20 @@ def sensor_reading(
         raise HTTPException(404, "Датчик не найден")
     sensor = apply_reading(db, sensor, data.value, data.online)
     return sensor_out(sensor)
+
+
+@app.post(
+    "/api/sensors/reset",
+    response_model=list[SensorOut],
+    tags=["3. Протокол датчиков"],
+    summary="Сброс датчиков в норму",
+)
+def reset_all_sensors(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Температура 24, кислород 20.9, дым 5. Открытые события закрываются."""
+    return [sensor_out(s) for s in reset_sensors(db)]
 
 
 # ---------- 4. Наблюдение и пожар ----------

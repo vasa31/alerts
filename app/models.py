@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -90,6 +91,8 @@ class Event(Base):
     # soft | sharp — тип звука уведомления
     sound: Mapped[str] = mapped_column(String(32), default="soft")
     sent_to_fire_dept: Mapped[bool] = mapped_column(Boolean, default=False)
+    # бот помечает пожар, когда сообщение ушло в Telegram
+    telegram_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     # open | confirmed_fire | confirmed_false | closed
     resolution: Mapped[str] = mapped_column(String(32), default="open")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -108,4 +111,16 @@ class Notification(Base):
     body: Mapped[str] = mapped_column(Text, default="")
     sound: Mapped[str] = mapped_column(String(32), default="soft")
     is_read: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class TelegramChat(Base):
+    """Чат, который написал боту /start и получает пожары."""
+
+    __tablename__ = "telegram_chats"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(256), default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

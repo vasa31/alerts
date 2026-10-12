@@ -13,6 +13,7 @@ export default function DutyPage() {
   const [notes, setNotes] = useState([])
   const [events, setEvents] = useState([])
   const [error, setError] = useState('')
+  const [resetting, setResetting] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
@@ -50,6 +51,18 @@ export default function DutyPage() {
     }
   }
 
+  async function resetSensors() {
+    setResetting(true)
+    try {
+      await api.resetSensors(token)
+      await refresh()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setResetting(false)
+    }
+  }
+
   async function forceWatch() {
     try {
       await api.watchCheck(token, true)
@@ -67,6 +80,14 @@ export default function DutyPage() {
         <>
           <button type="button" className="btn btn-ghost btn-sm" onClick={refresh}>
             Обновить
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={resetSensors}
+            disabled={resetting}
+          >
+            {resetting ? 'Сброс…' : 'Сброс датчиков'}
           </button>
           <button type="button" className="btn btn-ok btn-sm" onClick={() => resolve('confirmed_fire')}>
             Пожар был

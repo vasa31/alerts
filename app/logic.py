@@ -10,6 +10,13 @@ from .models import Event, Notification, Sensor, Zone
 # На складе поставьте 300 (5 минут).
 CONFIRM_SECONDS = 15
 
+# Обычные показания для кнопки сброса на пульте.
+NORMAL_VALUES = {
+    "temperature": 24.0,
+    "oxygen": 20.9,
+    "smoke": 5.0,
+}
+
 
 def map_color(status: str) -> str:
     if status == "alarm":
@@ -101,10 +108,11 @@ def _escalate_to_fire(db: Session, zone: Zone, alarmed: list[Sensor], why: str) 
         return existing
 
     names = _sensor_names(alarmed)
+    warehouse = zone.warehouse.name if zone.warehouse else "склад"
     msg = (
-        f"ПОЖАР: зона «{zone.name}» — {why}. "
-        f"Сработали {len(alarmed)} датчика: {names}. "
-        f"Координаты зоны: x={zone.map_x}, y={zone.map_y}"
+        f"ПОЖАР: {warehouse}, зона «{zone.name}» — {why}.\n"
+        f"Сработали {len(alarmed)} датчика: {names}.\n"
+        f"Координаты: x={zone.map_x}, y={zone.map_y}"
     )
     zone.watch_started_at = None
     return _emit(
@@ -267,6 +275,24 @@ def apply_reading(
         db.refresh(sensor)
 
     return sensor
+
+
+def reset_sensors(db: Session) -> list[Sensor]:
+    """Вернуть все датчики в норму и закрыть открытые события имитации."""
+    now = datetime.utcnow()
+    for zone in db.query(Zone).all():
+        zone.watch_started_at = None
+    for event in db.query(Event).filter(Event.resolution == "open"):
+        event.resolution = "closed"
+    sensors = db.query(Sensor).all()
+    for sensor in sensors:
+        sensor.status = "ok"
+        sensor.last_value = NORMAL_VALUES.get(sensor.sensor_type, 0.0)
+        sensor.last_seen = now
+    db.commit()
+    for sensor in sensors:
+        db.refresh(sensor)
+    return sensors
 
 
 def watch_remaining(zone: Zone) -> int | None:

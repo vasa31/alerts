@@ -62,4 +62,6 @@ export const api = {
       body: { value, online },
       noAuth: true,
     }),
+  resetSensors: (token) =>
+    request('/api/sensors/reset', { method: 'POST', token }),
 }

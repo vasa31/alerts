@@ -1,0 +1,32 @@
+services:
+  api:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: sqlite:////data/fire_monitor.db
+    volumes:
+      - fire-data:/data
+    restart: unless-stopped
+
+  bot:
+    build: .
+    command: python -m app.telegram
+    env_file: .env
+    environment:
+      DATABASE_URL: sqlite:////data/fire_monitor.db
+    volumes:
+      - fire-data:/data
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  fire-data:
