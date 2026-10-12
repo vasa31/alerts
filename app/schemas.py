@@ -102,6 +102,8 @@ class MapSensorPoint(BaseModel):
     map_x: float
     map_y: float
     last_value: float | None
+    threshold: float
+    ip: str
     description: str
 
 

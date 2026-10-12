@@ -314,6 +314,8 @@ def get_map(
                 map_x=s.map_x,
                 map_y=s.map_y,
                 last_value=s.last_value,
+                threshold=s.threshold,
+                ip=s.ip,
                 description=zone.description if zone else "",
             )
         )
