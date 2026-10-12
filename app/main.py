@@ -128,17 +128,18 @@ def seed(db: Session) -> None:
         ]
     )
 
+    # Склады слева/справа; датчики — внутри «пола» склада
     wh_a = Warehouse(
         name="Склад А",
         description="Левый склад",
-        map_x=70,
-        map_y=60,
+        map_x=125,
+        map_y=200,
     )
     wh_b = Warehouse(
         name="Склад Б",
         description="Правый склад",
-        map_x=320,
-        map_y=60,
+        map_x=375,
+        map_y=200,
     )
     db.add_all([wh_a, wh_b])
     db.flush()
@@ -147,15 +148,15 @@ def seed(db: Session) -> None:
         warehouse_id=wh_a.id,
         name="Зона 1.1",
         description="Склад А — контроль",
-        map_x=90,
-        map_y=100,
+        map_x=125,
+        map_y=200,
     )
     zone_b = Zone(
         warehouse_id=wh_b.id,
         name="Зона 2.1",
         description="Склад Б — контроль",
-        map_x=340,
-        map_y=100,
+        map_x=375,
+        map_y=200,
     )
     db.add_all([zone_a, zone_b])
     db.flush()
@@ -168,8 +169,8 @@ def seed(db: Session) -> None:
                 name="Датчик 1.1-T",
                 ip="192.168.1.11",
                 threshold=60.0,
-                map_x=100,
-                map_y=100,
+                map_x=80,
+                map_y=140,
             ),
             Sensor(
                 zone_id=zone_a.id,
@@ -177,8 +178,8 @@ def seed(db: Session) -> None:
                 name="Датчик 1.1-O2",
                 ip="192.168.1.12",
                 threshold=18.0,
-                map_x=110,
-                map_y=110,
+                map_x=160,
+                map_y=200,
             ),
             Sensor(
                 zone_id=zone_a.id,
@@ -186,8 +187,8 @@ def seed(db: Session) -> None:
                 name="Датчик 1.1-S",
                 ip="192.168.1.13",
                 threshold=50.0,
-                map_x=120,
-                map_y=120,
+                map_x=100,
+                map_y=280,
             ),
             Sensor(
                 zone_id=zone_b.id,
@@ -195,8 +196,8 @@ def seed(db: Session) -> None:
                 name="Датчик 2.1-T",
                 ip="192.168.1.21",
                 threshold=60.0,
-                map_x=360,
-                map_y=100,
+                map_x=330,
+                map_y=140,
             ),
             Sensor(
                 zone_id=zone_b.id,
@@ -204,8 +205,8 @@ def seed(db: Session) -> None:
                 name="Датчик 2.1-O2",
                 ip="192.168.1.22",
                 threshold=18.0,
-                map_x=430,
-                map_y=160,
+                map_x=420,
+                map_y=200,
             ),
             Sensor(
                 zone_id=zone_b.id,
@@ -213,11 +214,31 @@ def seed(db: Session) -> None:
                 name="Датчик 2.1-S",
                 ip="192.168.1.23",
                 threshold=50.0,
-                map_x=300,
-                map_y=150,
+                map_x=350,
+                map_y=280,
             ),
         ]
     )
+    db.commit()
+
+
+def sync_map_layout(db: Session) -> None:
+    """Подтянуть координаты датчиков внутрь складов (для уже созданной БД)."""
+    layout = {
+        "192.168.1.11": (80.0, 140.0),
+        "192.168.1.12": (160.0, 200.0),
+        "192.168.1.13": (100.0, 280.0),
+        "192.168.1.21": (330.0, 140.0),
+        "192.168.1.22": (420.0, 200.0),
+        "192.168.1.23": (350.0, 280.0),
+    }
+    wh_pos = {"Склад А": (125.0, 200.0), "Склад Б": (375.0, 200.0)}
+    for wh in db.query(Warehouse).all():
+        if wh.name in wh_pos:
+            wh.map_x, wh.map_y = wh_pos[wh.name]
+    for s in db.query(Sensor).all():
+        if s.ip in layout:
+            s.map_x, s.map_y = layout[s.ip]
     db.commit()
 
 
@@ -227,6 +248,7 @@ def on_startup():
     db = next(get_db())
     try:
         seed(db)
+        sync_map_layout(db)
     finally:
         db.close()
 
