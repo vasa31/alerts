@@ -34,6 +34,7 @@ from .schemas import (
 )
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
 TAGS_METADATA = [
     {
@@ -167,8 +168,8 @@ def seed(db: Session) -> None:
                 name="Датчик 1.1-T",
                 ip="192.168.1.11",
                 threshold=60.0,
-                map_x=110,
-                map_y=150,
+                map_x=100,
+                map_y=100,
             ),
             Sensor(
                 zone_id=zone_a.id,
@@ -176,8 +177,8 @@ def seed(db: Session) -> None:
                 name="Датчик 1.1-O2",
                 ip="192.168.1.12",
                 threshold=18.0,
-                map_x=180,
-                map_y=220,
+                map_x=110,
+                map_y=110,
             ),
             Sensor(
                 zone_id=zone_a.id,
@@ -185,8 +186,8 @@ def seed(db: Session) -> None:
                 name="Датчик 1.1-S",
                 ip="192.168.1.13",
                 threshold=50.0,
-                map_x=80,
-                map_y=280,
+                map_x=120,
+                map_y=120,
             ),
             Sensor(
                 zone_id=zone_b.id,
@@ -195,7 +196,7 @@ def seed(db: Session) -> None:
                 ip="192.168.1.21",
                 threshold=60.0,
                 map_x=360,
-                map_y=160,
+                map_y=100,
             ),
             Sensor(
                 zone_id=zone_b.id,
@@ -204,7 +205,7 @@ def seed(db: Session) -> None:
                 ip="192.168.1.22",
                 threshold=18.0,
                 map_x=430,
-                map_y=230,
+                map_y=160,
             ),
             Sensor(
                 zone_id=zone_b.id,
@@ -213,7 +214,7 @@ def seed(db: Session) -> None:
                 ip="192.168.1.23",
                 threshold=50.0,
                 map_x=300,
-                map_y=300,
+                map_y=150,
             ),
         ]
     )
@@ -573,17 +574,6 @@ def stats(
 # ---------- UI / служебное ----------
 
 
-@app.get("/", include_in_schema=False)
-def root():
-    return RedirectResponse(url="/ui/")
-
-
-@app.get("/ui", include_in_schema=False)
-@app.get("/ui/", include_in_schema=False)
-def ui_page():
-    return FileResponse(STATIC_DIR / "index.html")
-
-
 @app.get(
     "/api",
     tags=["8. Служебное"],
@@ -592,14 +582,45 @@ def ui_page():
 def api_info():
     return {
         "ok": True,
-        "ui": "/ui/",
+        "ui": "/",
+        "legacy_ui": "/ui/",
         "docs": "/docs",
         "users": {
-            "admin / admin": "просмотр карты и событий",
-            "duty / duty": "дежурный — карта, уведомления, подтверждение пожара",
+            "admin / admin": "кабинет администратора — карта и статистика",
+            "duty / duty": "пульт дежурного — карта, ползунки, подтверждение",
         },
         "auth": "POST /api/login → access_token → Authorization: Bearer <token>",
     }
 
 
+@app.get("/ui", include_in_schema=False)
+@app.get("/ui/", include_in_schema=False)
+def legacy_ui_page():
+    return FileResponse(STATIC_DIR / "index.html")
+
+
 app.mount("/ui/static", StaticFiles(directory=str(STATIC_DIR)), name="ui-static")
+
+
+@app.get("/", include_in_schema=False)
+def root():
+    index = FRONTEND_DIST / "index.html"
+    if index.exists():
+        return FileResponse(index)
+    return RedirectResponse(url="/ui/")
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+def spa_or_asset(full_path: str):
+    """SPA React: отдаём файлы из frontend/dist или index.html."""
+    if full_path.startswith(("api/", "docs", "redoc", "openapi", "ui")):
+        raise HTTPException(404, "Not found")
+    if not FRONTEND_DIST.exists():
+        return RedirectResponse(url="/ui/")
+    candidate = FRONTEND_DIST / full_path
+    if candidate.is_file():
+        return FileResponse(candidate)
+    index = FRONTEND_DIST / "index.html"
+    if index.exists():
+        return FileResponse(index)
+    raise HTTPException(404, "Frontend not built")

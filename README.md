@@ -3,33 +3,48 @@
 Простой backend на **FastAPI + SQLite + JWT** и кнопочный UI.  
 Склады и датчики заданы при старте (два склада, по 3 датчика). Добавлять их через API/UI нельзя.
 
-## Как запустить
+## Как запустить всё
+
+Нужны **два терминала**: сначала API, потом React.
+
+**1. Backend (терминал 1)**
 
 ```bash
 cd /Users/roman/surkova
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+source .venv/bin/activate          # если venv ещё нет: python3 -m venv .venv && pip install -r requirements.txt
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Открыть:
-
-- UI: http://127.0.0.1:8000/ui/  ← открывайте этот адрес, не файл `index.html`
-- Swagger: http://127.0.0.1:8000/docs
-
-Проверка:
+**2. Frontend (терминал 2)**
 
 ```bash
-./test_api.sh
+cd /Users/roman/surkova/frontend
+npm install                       # один раз
+npm run dev
 ```
+
+**3. Открыть**
+
+| Что | Адрес |
+|-----|--------|
+| Monitor (React) | http://127.0.0.1:5173/ |
+| Swagger API | http://127.0.0.1:8000/docs |
+| Старый UI | http://127.0.0.1:8000/ui/ |
+
+Логины: `duty` / `duty` (дежурный), `admin` / `admin` (админ).
+
+Vite сам проксирует `/api` на `:8000`. Без запущенного бэкенда вход не сработает.
+
+Одной командой только API-проверка: `./test_api.sh` (бэкенд должен быть поднят).
 
 ## Учётные записи
 
-| Логин   | Пароль | Роль     | Что может |
-|---------|--------|----------|-----------|
-| `admin` | `admin`| админ    | карта, события, статистика |
-| `duty`  | `duty` | дежурный | карта, уведомления, подтверждение пожара/ложного |
+Единый экран входа. После логина маршрут зависит от роли.
+
+| Логин   | Пароль | Роль     | Экран |
+|---------|--------|----------|--------|
+| `duty`  | `duty` | дежурный | пульт: карта, ползунки датчиков, уведомления, подтверждение |
+| `admin` | `admin`| админ    | кабинет: карта (просмотр), статистика, вызовы в пожарную |
 
 Пароли в демо хранятся как есть.
 
@@ -142,15 +157,9 @@ curl -X POST http://127.0.0.1:8000/api/ingest/192.168.1.11 \
 ## Структура
 
 ```text
-app/
-  main.py       — API
-  auth.py       — JWT
-  models.py     — SQLite
-  schemas.py    — запросы/ответы
-  logic.py      — 1 / 2 / 3 датчика, окно наблюдения
-  placement.py  — размер карты
-  db.py
-static/index.html
+app/                 — FastAPI backend
+frontend/            — React (Vite): логин, /duty, /admin
+static/index.html    — старый простой UI
 test_api.sh
 ```
 
