@@ -48,6 +48,7 @@ class Zone(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     map_x: Mapped[float] = mapped_column(Float, default=0.0)
     map_y: Mapped[float] = mapped_column(Float, default=0.0)
+    watch_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     warehouse: Mapped["Warehouse"] = relationship(back_populates="zones")
     sensors: Mapped[list["Sensor"]] = relationship(back_populates="zone")

@@ -12,7 +12,11 @@ SECRET_KEY = "surkova-fire-monitor-secret-change-me"
 ALGORITHM = "HS256"
 TOKEN_EXPIRE_HOURS = 12
 
-bearer_scheme = HTTPBearer(auto_error=False)
+bearer_scheme = HTTPBearer(
+    auto_error=False,
+    scheme_name="BearerAuth",
+    description="Вставьте access_token из POST /api/login (без слова Bearer — Swagger добавит сам).",
+)
 
 
 def create_access_token(user: User) -> str:

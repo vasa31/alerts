@@ -6,40 +6,105 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
-from .auth import create_access_token, get_current_user, require_admin
+from .auth import create_access_token, get_current_user
 from .db import Base, engine, get_db
-from .logic import apply_reading, map_color
+from .logic import (
+    CONFIRM_SECONDS,
+    apply_reading,
+    evaluate_all_zones,
+    map_color,
+    watch_remaining,
+)
 from .models import Event, Notification, Sensor, User, Warehouse, Zone
-from .placement import MAP_HEIGHT, MAP_WIDTH, place_sensor, place_warehouse
+from .placement import MAP_HEIGHT, MAP_WIDTH
 from .schemas import (
     EventOut,
     LoginIn,
     MapOut,
     MapSensorPoint,
+    MapZone,
     NotificationOut,
     ResolveEventIn,
-    SensorIn,
     SensorOut,
     SensorReadingIn,
     StatsOut,
     TokenOut,
     UserOut,
-    WarehouseIn,
     WarehouseOut,
-    ZoneIn,
-    ZoneOut,
 )
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
+TAGS_METADATA = [
+    {
+        "name": "1. Авторизация",
+        "description": (
+            "Логин и текущий пользователь. "
+            "После `POST /api/login` нажмите **Authorize** и вставьте `access_token` "
+            "(или `Bearer <token>`). Учётки: `duty`/`duty`, `admin`/`admin`."
+        ),
+    },
+    {
+        "name": "2. Карта и склады",
+        "description": (
+            "Схема складов А/Б и датчиков на карте. "
+            "Цвета: green — ок, gray — offline, red — тревога."
+        ),
+    },
+    {
+        "name": "3. Протокол датчиков",
+        "description": (
+            "Приём показаний с датчиков по HTTP. **JWT не нужен**. "
+            "Тело: `{\"value\": 72.5, \"online\": true}`."
+        ),
+    },
+    {
+        "name": "4. Наблюдение и пожар",
+        "description": (
+            "Логика 1/2/3 датчиков. "
+            "1 → ложное; 2 → окно наблюдения; 3 → сразу пожар. "
+            "`force=true` в check — как будто окно уже истекло."
+        ),
+    },
+    {
+        "name": "5. Уведомления",
+        "description": "Уведомления дежурному (`duty`) и пожарной (`fire_dept`).",
+    },
+    {
+        "name": "6. События",
+        "description": (
+            "Журнал событий и закрытие дежурным: "
+            "`confirmed_fire` / `confirmed_false`."
+        ),
+    },
+    {
+        "name": "7. Статистика",
+        "description": "Ложные vs подтверждённые пожары (сравнение со старым протоколом).",
+    },
+    {
+        "name": "8. Служебное",
+        "description": "Краткая справка по API.",
+    },
+]
+
 app = FastAPI(
     title="Мониторинг складов / пожарные датчики",
-    description=(
-        "Личный кабинет: админ добавляет склады и датчики, "
-        "дежурный (role=duty) смотрит карту и уведомления. "
-        "Авторизация: JWT Bearer token."
-    ),
+    description="""
+## Оглавление
+
+1. **Авторизация** — логин JWT, текущий пользователь  
+2. **Карта и склады** — карта, склады, список датчиков  
+3. **Протокол датчиков** — приём показаний по IP (без JWT)  
+4. **Наблюдение и пожар** — окно при 2 из 3, эскалация  
+5. **Уведомления** — дежурный и пожарная  
+6. **События** — журнал и подтверждение  
+7. **Статистика** — ложные / подтверждённые  
+
+**Как пользоваться Swagger:**  
+`POST /api/login` → скопировать `access_token` → кнопка **Authorize** → вставить токен → вызывать защищённые методы.
+""",
     version="1.0.0",
+    openapi_tags=TAGS_METADATA,
 )
 
 app.add_middleware(
@@ -182,12 +247,17 @@ def sensor_out(s: Sensor) -> SensorOut:
     )
 
 
-# ---------- auth ----------
+# ---------- 1. Авторизация ----------
 
 
-@app.post("/api/login", response_model=TokenOut)
+@app.post(
+    "/api/login",
+    response_model=TokenOut,
+    tags=["1. Авторизация"],
+    summary="Логин → JWT",
+)
 def login(data: LoginIn, db: Session = Depends(get_db)):
-    """Логин → JWT. Дальше: Authorization: Bearer <access_token>"""
+    """Логин → JWT. Дальше: **Authorize** в Swagger или заголовок `Authorization: Bearer <token>`."""
     user = (
         db.query(User)
         .filter(User.username == data.username, User.password == data.password)
@@ -199,150 +269,32 @@ def login(data: LoginIn, db: Session = Depends(get_db)):
     return TokenOut(access_token=token, user=user)
 
 
-@app.get("/api/me", response_model=UserOut)
+@app.get(
+    "/api/me",
+    response_model=UserOut,
+    tags=["1. Авторизация"],
+    summary="Текущий пользователь",
+)
 def me(user: User = Depends(get_current_user)):
+    """Кто вошёл по токену."""
     return user
 
 
-# ---------- admin: склады / зоны / датчики ----------
+# ---------- 2. Карта и склады ----------
 
 
-@app.post("/api/warehouses", response_model=WarehouseOut)
-def create_warehouse(
-    data: WarehouseIn,
-    db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
-):
-    prefer = (data.map_x, data.map_y) if data.map_x or data.map_y else None
-    x, y = place_warehouse(db, prefer)
-    wh = Warehouse(
-        name=data.name,
-        description=data.description,
-        map_x=x,
-        map_y=y,
-    )
-    db.add(wh)
-    db.commit()
-    db.refresh(wh)
-    return wh
-
-
-@app.get("/api/warehouses", response_model=list[WarehouseOut])
-def list_warehouses(
-    db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
-    return db.query(Warehouse).all()
-
-
-@app.post("/api/zones", response_model=ZoneOut)
-def create_zone(
-    data: ZoneIn,
-    db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
-):
-    wh = db.get(Warehouse, data.warehouse_id)
-    if not wh:
-        raise HTTPException(404, "Склад не найден")
-    prefer = (data.map_x, data.map_y) if data.map_x or data.map_y else (wh.map_x + 40, wh.map_y + 40)
-    x, y = place_sensor(db, near=(wh.map_x, wh.map_y), prefer=prefer)
-    zone = Zone(
-        warehouse_id=data.warehouse_id,
-        name=data.name,
-        description=data.description,
-        map_x=x,
-        map_y=y,
-    )
-    db.add(zone)
-    db.commit()
-    db.refresh(zone)
-    return zone
-
-
-@app.get("/api/zones", response_model=list[ZoneOut])
-def list_zones(
-    db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
-    return db.query(Zone).all()
-
-
-@app.post("/api/sensors", response_model=SensorOut)
-def create_sensor(
-    data: SensorIn,
-    db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
-):
-    if data.sensor_type not in ("temperature", "oxygen", "smoke"):
-        raise HTTPException(400, "sensor_type: temperature | oxygen | smoke")
-    zone = db.get(Zone, data.zone_id)
-    if not zone:
-        raise HTTPException(404, "Зона не найдена")
-    prefer = (data.map_x, data.map_y) if data.map_x or data.map_y else None
-    x, y = place_sensor(db, near=(zone.map_x, zone.map_y), prefer=prefer)
-    payload = data.model_dump()
-    payload["map_x"] = x
-    payload["map_y"] = y
-    s = Sensor(**payload)
-    db.add(s)
-    db.commit()
-    db.refresh(s)
-    return sensor_out(s)
-
-
-@app.get("/api/sensors", response_model=list[SensorOut])
-def list_sensors(
-    db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
-    return [sensor_out(s) for s in db.query(Sensor).all()]
-
-
-# ---------- протокол датчика: приём данных по HTTP (без JWT) ----------
-
-
-@app.post("/api/sensors/{sensor_id}/reading", response_model=SensorOut)
-def sensor_reading(
-    sensor_id: int,
-    data: SensorReadingIn,
-    db: Session = Depends(get_db),
-):
-    """
-    Эндпоинт, на который датчик шлёт показания со своего IP.
-    JWT не нужен — датчик пишет напрямую.
-
-    Пример тела:
-    {"value": 72.5, "online": true}
-    """
-    sensor = db.get(Sensor, sensor_id)
-    if not sensor:
-        raise HTTPException(404, "Датчик не найден")
-    sensor = apply_reading(db, sensor, data.value, data.online)
-    return sensor_out(sensor)
-
-
-@app.post("/api/ingest/{ip}", response_model=SensorOut)
-def ingest_by_ip(
-    ip: str,
-    data: SensorReadingIn,
-    db: Session = Depends(get_db),
-):
-    """Альтернатива: приём по IP датчика (как в реальном протоколе)."""
-    sensor = db.query(Sensor).filter(Sensor.ip == ip).first()
-    if not sensor:
-        raise HTTPException(404, f"Датчик с IP {ip} не найден")
-    sensor = apply_reading(db, sensor, data.value, data.online)
-    return sensor_out(sensor)
-
-
-# ---------- карта для дежурного ----------
-
-
-@app.get("/api/map", response_model=MapOut)
+@app.get(
+    "/api/map",
+    response_model=MapOut,
+    tags=["2. Карта и склады"],
+    summary="Карта складов и датчиков",
+)
 def get_map(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
+    """Склады, зоны (таймер наблюдения), датчики с координатами и цветом."""
+    evaluate_all_zones(db)
     warehouses = db.query(Warehouse).all()
     points: list[MapSensorPoint] = []
     for s in db.query(Sensor).all():
@@ -365,23 +317,144 @@ def get_map(
                 description=zone.description if zone else "",
             )
         )
+    zones_out: list[MapZone] = []
+    for zone in db.query(Zone).all():
+        alarmed = sum(1 for s in zone.sensors if s.status == "alarm")
+        zones_out.append(
+            MapZone(
+                id=zone.id,
+                warehouse_id=zone.warehouse_id,
+                name=zone.name,
+                alarmed_count=alarmed,
+                state=_zone_state(zone),
+                watch_remaining_sec=watch_remaining(zone),
+            )
+        )
     return MapOut(
         map_width=MAP_WIDTH,
         map_height=MAP_HEIGHT,
+        confirm_seconds=CONFIRM_SECONDS,
         warehouses=warehouses,
+        zones=zones_out,
         sensors=points,
     )
 
 
-# ---------- уведомления и события ----------
+@app.get(
+    "/api/warehouses",
+    response_model=list[WarehouseOut],
+    tags=["2. Карта и склады"],
+    summary="Список складов",
+)
+def list_warehouses(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    return db.query(Warehouse).all()
 
 
-@app.get("/api/notifications", response_model=list[NotificationOut])
+@app.get(
+    "/api/sensors",
+    response_model=list[SensorOut],
+    tags=["2. Карта и склады"],
+    summary="Список датчиков",
+)
+def list_sensors(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    return [sensor_out(s) for s in db.query(Sensor).all()]
+
+
+# ---------- 3. Протокол датчиков ----------
+
+
+@app.post(
+    "/api/ingest/{ip}",
+    response_model=SensorOut,
+    tags=["3. Протокол датчиков"],
+    summary="Показание по IP датчика",
+)
+def ingest_by_ip(
+    ip: str,
+    data: SensorReadingIn,
+    db: Session = Depends(get_db),
+):
+    """Приём по IP (как в реальном протоколе). JWT не нужен."""
+    sensor = db.query(Sensor).filter(Sensor.ip == ip).first()
+    if not sensor:
+        raise HTTPException(404, f"Датчик с IP {ip} не найден")
+    sensor = apply_reading(db, sensor, data.value, data.online)
+    return sensor_out(sensor)
+
+
+@app.post(
+    "/api/sensors/{sensor_id}/reading",
+    response_model=SensorOut,
+    tags=["3. Протокол датчиков"],
+    summary="Показание по id датчика",
+)
+def sensor_reading(
+    sensor_id: int,
+    data: SensorReadingIn,
+    db: Session = Depends(get_db),
+):
+    """
+    Датчик шлёт показания напрямую. JWT не нужен.
+
+    Пример тела: `{"value": 72.5, "online": true}`
+    """
+    sensor = db.get(Sensor, sensor_id)
+    if not sensor:
+        raise HTTPException(404, "Датчик не найден")
+    sensor = apply_reading(db, sensor, data.value, data.online)
+    return sensor_out(sensor)
+
+
+# ---------- 4. Наблюдение и пожар ----------
+
+
+def _zone_state(zone: Zone) -> str:
+    alarmed = sum(1 for s in zone.sensors if s.status == "alarm")
+    if alarmed >= 3:
+        return "fire"
+    if alarmed == 2:
+        return "watch"
+    if alarmed == 1:
+        return "false"
+    return "ok"
+
+
+@app.post(
+    "/api/watch/check",
+    tags=["4. Наблюдение и пожар"],
+    summary="Пересчитать окна наблюдения",
+)
+def watch_check(
+    force: bool = False,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """`force=true` — как будто время окна уже прошло (эскалация в пожар при 2 из 3)."""
+    evaluate_all_zones(db, force_timeout=force)
+    return {"ok": True, "force": force, "confirm_seconds": CONFIRM_SECONDS}
+
+
+# ---------- 5. Уведомления ----------
+
+
+@app.get(
+    "/api/notifications",
+    response_model=list[NotificationOut],
+    tags=["5. Уведомления"],
+    summary="Список уведомлений",
+)
 def list_notifications(
     target: str | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """`target=duty` или `target=fire_dept`. Без параметра дежурный видит только свои."""
     q = db.query(Notification).order_by(Notification.id.desc())
     if target:
         q = q.filter(Notification.target == target)
@@ -390,7 +463,12 @@ def list_notifications(
     return q.limit(50).all()
 
 
-@app.post("/api/notifications/{notification_id}/read", response_model=NotificationOut)
+@app.post(
+    "/api/notifications/{notification_id}/read",
+    response_model=NotificationOut,
+    tags=["5. Уведомления"],
+    summary="Отметить уведомление прочитанным",
+)
 def read_notification(
     notification_id: int,
     db: Session = Depends(get_db),
@@ -405,22 +483,36 @@ def read_notification(
     return n
 
 
-@app.get("/api/events", response_model=list[EventOut])
+# ---------- 6. События ----------
+
+
+@app.get(
+    "/api/events",
+    response_model=list[EventOut],
+    tags=["6. События"],
+    summary="Журнал событий",
+)
 def list_events(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
+    """Типы: `false_alarm`, `watch`, `fire_signal`, `sensor_offline`."""
     return db.query(Event).order_by(Event.id.desc()).all()
 
 
-@app.post("/api/events/{event_id}/resolve", response_model=EventOut)
+@app.post(
+    "/api/events/{event_id}/resolve",
+    response_model=EventOut,
+    tags=["6. События"],
+    summary="Подтвердить пожар или ложное",
+)
 def resolve_event(
     event_id: int,
     data: ResolveEventIn,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Дежурный подтверждает: реальный пожар или ложное срабатывание."""
+    """Дежурный после выезда: `confirmed_fire` или `confirmed_false`."""
     if user.role not in ("duty", "admin"):
         raise HTTPException(403, "Только дежурный или админ")
     if data.resolution not in ("confirmed_fire", "confirmed_false"):
@@ -438,12 +530,20 @@ def resolve_event(
     return ev
 
 
-@app.get("/api/stats", response_model=StatsOut)
+# ---------- 7. Статистика ----------
+
+
+@app.get(
+    "/api/stats",
+    response_model=StatsOut,
+    tags=["7. Статистика"],
+    summary="Ложные vs подтверждённые",
+)
 def stats(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    """Сравнение с старым протоколом: ложные vs подтверждённые пожары."""
+    """Сравнение с старым протоколом: доля ложных срабатываний."""
     fire_signals = (
         db.query(Event).filter(Event.event_type == "fire_signal").count()
     )
@@ -468,25 +568,32 @@ def stats(
     )
 
 
-@app.get("/")
+# ---------- UI / служебное ----------
+
+
+@app.get("/", include_in_schema=False)
 def root():
     return RedirectResponse(url="/ui/")
 
 
-@app.get("/ui")
-@app.get("/ui/")
+@app.get("/ui", include_in_schema=False)
+@app.get("/ui/", include_in_schema=False)
 def ui_page():
     return FileResponse(STATIC_DIR / "index.html")
 
 
-@app.get("/api")
+@app.get(
+    "/api",
+    tags=["8. Служебное"],
+    summary="Краткая справка",
+)
 def api_info():
     return {
         "ok": True,
         "ui": "/ui/",
         "docs": "/docs",
         "users": {
-            "admin / admin": "администратор — склады, зоны, датчики",
+            "admin / admin": "просмотр карты и событий",
             "duty / duty": "дежурный — карта, уведомления, подтверждение пожара",
         },
         "auth": "POST /api/login → access_token → Authorization: Bearer <token>",

@@ -91,33 +91,22 @@
     <button type="button" id="btnFalse">Отметить ЛОЖНОЕ</button>
   </div>
 
-  <h2>Симуляция датчиков</h2>
+  <h2>Симуляция датчиков (склад А)</h2>
   <div class="row">
-    <button type="button" id="btnNormal">Норма</button>
+    <button type="button" id="btnNormal">Норма (все ок)</button>
     <button type="button" id="btnOne">1 тревога → ложное</button>
-    <button type="button" id="btnTwo">2 тревоги → ПОЖАР</button>
+    <button type="button" id="btnTwo">2 тревоги → наблюдение</button>
+    <button type="button" id="btnThree">3 тревоги → сразу пожар</button>
     <button type="button" id="btnOff">1 offline</button>
   </div>
-
-  <h2>Админ</h2>
   <div class="row">
-    <input id="whName" placeholder="Название склада" value="Склад В" />
-    <button type="button" id="btnWh">Добавить склад</button>
+    <button type="button" id="btnForce">Окно прошло (как будто 5 мин)</button>
   </div>
-  <div class="row">
-    <input id="sensorZoneId" placeholder="id зоны" value="1" size="4" />
-    <input id="sensorName" placeholder="Имя датчика" value="Новый датчик" />
-    <select id="sensorType">
-      <option value="temperature">temperature</option>
-      <option value="oxygen">oxygen</option>
-      <option value="smoke">smoke</option>
-    </select>
-    <button type="button" id="btnSensor">Добавить датчик</button>
-  </div>
+  <div id="watchInfo" style="margin:8px 0;color:#333;"></div>
 
   <h2>Карта</h2>
   <div id="map-board"></div>
-  <div id="map-legend">координаты с бэка; зелёный — ок, серый — offline, красный — тревога</div>
+  <div id="map-legend">зелёный — ок, серый — offline, красный мигает — тревога. 2 из 3 — ждём окно, 3 из 3 — пожар сразу</div>
 
   <h2>Ответ API</h2>
   <div id="out">Нажмите кнопку</div>
@@ -131,6 +120,16 @@
     document.getElementById("apiBase").textContent = API;
 
     let token = localStorage.getItem("token") || "";
+    let pollTimer = null;
+
+    function startPoll() {
+      if (pollTimer) return;
+      pollTimer = setInterval(() => { if (token) loadMap(true); }, 3000);
+    }
+
+    function stopPoll() {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
 
     function setUser(text) {
       document.getElementById("user").textContent = text || "не вошёл";
@@ -192,6 +191,7 @@
         localStorage.setItem("token", token);
         setUser(data.user.username + " (" + data.user.role + ")");
         show(data);
+        startPoll();
         await loadMap();
       } catch (e) {
         show("Ошибка входа: " + e.message);
@@ -202,7 +202,9 @@
       token = "";
       localStorage.removeItem("token");
       setUser("");
+      stopPoll();
       document.getElementById("map-board").innerHTML = "";
+      document.getElementById("watchInfo").textContent = "";
       show("Вышли");
     }
 
@@ -237,15 +239,25 @@
         el.appendChild(tip);
         board.appendChild(el);
       });
+
+      const info = document.getElementById("watchInfo");
+      const parts = (data.zones || []).map(z => {
+        let t = z.name + ": " + z.alarmed_count + "/3, " + z.state;
+        if (z.state === "watch" && z.watch_remaining_sec != null) {
+          t += " (осталось " + z.watch_remaining_sec + " сек из " + data.confirm_seconds + ")";
+        }
+        return t;
+      });
+      info.textContent = parts.join(" | ");
     }
 
-    async function loadMap() {
+    async function loadMap(silent) {
       try {
         const data = await api("/api/map");
         renderMap(data);
-        show(data);
+        if (!silent) show(data);
       } catch (e) {
-        show("Ошибка карты: " + e.message);
+        if (!silent) show("Ошибка карты: " + e.message);
       }
     }
 
@@ -306,10 +318,19 @@
       } catch (e) { show("Ошибка: " + e.message); }
     }
 
-    async function simFire() {
+    async function simWatch() {
       try {
         await ingest("192.168.1.11", 90, true);
         await ingest("192.168.1.12", 20.9, true);
+        show(await ingest("192.168.1.13", 80, true));
+        if (token) await loadMap();
+      } catch (e) { show("Ошибка: " + e.message); }
+    }
+
+    async function simThree() {
+      try {
+        await ingest("192.168.1.11", 90, true);
+        await ingest("192.168.1.12", 10, true);
         show(await ingest("192.168.1.13", 80, true));
         if (token) await loadMap();
       } catch (e) { show("Ошибка: " + e.message); }
@@ -322,40 +343,11 @@
       } catch (e) { show("Ошибка: " + e.message); }
     }
 
-    async function addWarehouse() {
+    async function forceWatch() {
       try {
-        const name = document.getElementById("whName").value;
-        // map_x/map_y = 0 → бэкенд сам ищет свободное место
-        const data = await api("/api/warehouses", {
-          method: "POST",
-          body: JSON.stringify({ name: name, description: "через UI", map_x: 0, map_y: 0 }),
-        });
-        show(data);
+        show(await api("/api/watch/check?force=true", { method: "POST" }));
         await loadMap();
-      } catch (e) { show("Ошибка: " + e.message); }
-    }
-
-    async function addSensor() {
-      try {
-        const zone_id = Number(document.getElementById("sensorZoneId").value);
-        const name = document.getElementById("sensorName").value;
-        const sensor_type = document.getElementById("sensorType").value;
-        const ip = "192.168.9." + Math.floor(Math.random() * 200 + 10);
-        const thresholds = { temperature: 60, oxygen: 18, smoke: 50 };
-        const data = await api("/api/sensors", {
-          method: "POST",
-          body: JSON.stringify({
-            zone_id,
-            sensor_type,
-            name,
-            ip,
-            threshold: thresholds[sensor_type] || 50,
-            map_x: 0,
-            map_y: 0,
-          }),
-        });
-        show(data);
-        await loadMap();
+        await loadNotifications();
       } catch (e) { show("Ошибка: " + e.message); }
     }
 
@@ -370,13 +362,14 @@
     document.getElementById("btnFalse").onclick = () => resolveOpen("confirmed_false");
     document.getElementById("btnNormal").onclick = simNormal;
     document.getElementById("btnOne").onclick = simOneAlarm;
-    document.getElementById("btnTwo").onclick = simFire;
+    document.getElementById("btnTwo").onclick = simWatch;
+    document.getElementById("btnThree").onclick = simThree;
     document.getElementById("btnOff").onclick = simOffline;
-    document.getElementById("btnWh").onclick = addWarehouse;
-    document.getElementById("btnSensor").onclick = addSensor;
+    document.getElementById("btnForce").onclick = forceWatch;
 
     if (token) {
       setUser("токен сохранён — нажмите Обновить карту или войдите снова");
+      startPoll();
     }
   </script>
 </body>

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class LoginIn(BaseModel):
@@ -22,42 +22,14 @@ class TokenOut(BaseModel):
     user: UserOut
 
 
-class WarehouseIn(BaseModel):
-    name: str
-    description: str = ""
-    # 0,0 → бэкенд сам подберёт свободное место
-    map_x: float = 0.0
-    map_y: float = 0.0
-
-
-class WarehouseOut(WarehouseIn):
+class WarehouseOut(BaseModel):
     id: int
-
-    model_config = {"from_attributes": True}
-
-
-class ZoneIn(BaseModel):
-    warehouse_id: int
     name: str
     description: str = ""
     map_x: float = 0.0
     map_y: float = 0.0
 
-
-class ZoneOut(ZoneIn):
-    id: int
-
     model_config = {"from_attributes": True}
-
-
-class SensorIn(BaseModel):
-    zone_id: int
-    sensor_type: str = Field(description="temperature | oxygen | smoke")
-    name: str
-    ip: str
-    threshold: float
-    map_x: float = 0.0
-    map_y: float = 0.0
 
 
 class SensorOut(BaseModel):
@@ -133,10 +105,21 @@ class MapSensorPoint(BaseModel):
     description: str
 
 
+class MapZone(BaseModel):
+    id: int
+    warehouse_id: int
+    name: str
+    alarmed_count: int
+    state: str
+    watch_remaining_sec: int | None = None
+
+
 class MapOut(BaseModel):
     map_width: float
     map_height: float
+    confirm_seconds: int
     warehouses: list[WarehouseOut]
+    zones: list[MapZone]
     sensors: list[MapSensorPoint]
 
 
